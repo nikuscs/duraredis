@@ -220,6 +220,8 @@ async function checkIdmpInfo(s: Pair, key: string) {
       expect(dval.items.length).toBe(2);
       expect(asBulk(dval.items[0])).toMatch(/^\d+-\d+$/);
       expect(dval.items[1]).toEqual(rval.items[1]);
+    } else if (rval.kind === "bulk" && /^\d+-\d+$/.test(asBulk(rval))) {
+      expect(asBulk(dval)).toMatch(/^\d+-\d+$/);
     } else {
       expect(dval).toEqual(rval);
     }

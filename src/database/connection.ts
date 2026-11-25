@@ -56,10 +56,11 @@ export class Connection {
     private readonly hub: Hub,
     id: number,
     database: string,
+    client: string,
     private readonly send: (bytes: Uint8Array) => void,
     private readonly end: () => void,
   ) {
-    this.session = { id, proto: 2, database, createdAt: Date.now(), closing: false, name: null, libName: "", libVersion: "", authenticated: false, failedAuth: 0, fieldsets: new Map() };
+    this.session = { id, proto: 2, database, createdAt: Date.now(), closing: false, name: null, libName: "", libVersion: "", authenticated: false, client, fieldsets: new Map() };
   }
 
   get waiting(): boolean {
@@ -154,6 +155,10 @@ export class Connection {
       return r.error(`ERR Can't execute '${name}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context`);
     }
     if (CONNECTION_COMMANDS.has(name)) return this.connectionCommand(name, args);
+    if (!this.hub.admit()) {
+      if (this.multi) this.multiFailed = true;
+      return r.error(`ERR duraredis: this database is limited to ${this.hub.commandsPerSecond} commands per second, slow down`);
+    }
     const spec = this.lookup(args);
     if (!("run" in spec)) {
       if (this.multi) this.multiFailed = true;

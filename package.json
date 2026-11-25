@@ -20,6 +20,8 @@
     "deploy": "wrangler deploy --experimental-new-config",
     "typecheck": "bun check && bun check -p test",
     "lint": "oxlint .",
-    "test": "bun test --timeout 90000"
+    "test": "bun test --timeout 90000",
+    "bridge": "bun scripts/bridge.ts",
+    "test:live": "DURAREDIS_NO_SERVER=1 bun test test/live.test.ts --timeout 90000"
   }
 }

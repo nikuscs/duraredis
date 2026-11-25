@@ -70,6 +70,21 @@ function categoryCommands(table: Table, category: string): Array<string> {
 
 const isUser = (ctx: Ctx, name: Uint8Array) => text(name) === ctx.server.database;
 
+const SETUSER_RULES = "ERR duraredis: ACL SETUSER supports on, resetpass, nopass and >password";
+
+function setUser(ctx: Ctx, [, , user, ...rules]: Array<Uint8Array>): Reply {
+  if (!isUser(ctx, user)) throw new RedisError(`ERR duraredis: the only user is the database name '${ctx.server.database}'`);
+  let password: string | null | undefined;
+  for (const rule of rules.map((b) => text(b))) {
+    const word = rule.toLowerCase();
+    if (rule.startsWith(">") && rule.length > 1 && password === undefined) password = rule.slice(1);
+    else if (word === "nopass" && password === undefined) password = null;
+    else if (word !== "on" && word !== "resetpass") throw new RedisError(SETUSER_RULES);
+  }
+  if (password !== undefined) ctx.server.setPassword(password);
+  return r.ok;
+}
+
 function aclCommands(table: () => Table): Map<string, Subcommand> {
   return new Map<string, Subcommand>([
     ["WHOAMI", { arity: 2, run: (ctx) => r.bulk(ctx.server.database) }],
@@ -104,7 +119,7 @@ function aclCommands(table: () => Table): Map<string, Subcommand> {
         return r.array([]);
       },
     }],
-    ["SETUSER", { arity: -3, run: unavailable("ACL SETUSER") }],
+    ["SETUSER", { arity: -3, run: setUser }],
     ["DELUSER", { arity: -3, run: unavailable("ACL DELUSER") }],
     ["LOAD", { arity: 2, run: unavailable("ACL LOAD") }],
     ["SAVE", { arity: 2, run: unavailable("ACL SAVE") }],
@@ -192,7 +207,7 @@ const clusterOff = () => {
 
 export function adminCommands(table: () => Table): Table {
   const admin: Table = {
-    acl: keyless(-2, [], container("ACL", aclCommands(table))),
+    acl: keyless(-2, ["noscript"], container("ACL", aclCommands(table))),
     memory: keyless(-2, ["readonly"], container("MEMORY", MEMORY)),
     slowlog: keyless(-2, [], container("SLOWLOG", SLOWLOG)),
     latency: keyless(-2, [], container("LATENCY", LATENCY)),

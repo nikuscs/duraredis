@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { Keyspace } from "../store/keyspace";
-import { SCHEMA } from "../store/schema";
 import { Connection } from "./connection";
 import { Hub } from "./hub";
-import { createDatabase, passwordMatches, readMeta } from "./lifecycle";
+import { checkPassword } from "./guard";
+import type { AuthResult } from "./guard";
+import { changePassword, createDatabase, ensureSchema, readMeta } from "./lifecycle";
+import { readPreamble } from "./preamble";
 import { chunkOf, closeQuietly, refuse } from "./socket";
 
 export class RedisDO extends DurableObject<Env> {
@@ -14,15 +16,21 @@ export class RedisDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    if (readMeta(ctx.storage)) ctx.storage.sql.exec(SCHEMA);
-    this.hub = new Hub(new Keyspace(ctx.storage.sql), ctx.id.name ?? "", Date.now(), (fn) => ctx.storage.transactionSync(fn), (password) => this.authenticate(password));
+    if (readMeta(ctx.storage)) ensureSchema(ctx.storage);
+    const access = { authenticate: (password: string, client: string) => this.authenticate(password, client), setPassword: (password: string | null) => this.setPassword(password), commandsPerSecond: env.LIMITS.commandsPerSecond };
+    this.hub = new Hub(new Keyspace(ctx.storage.sql), ctx.id.name ?? "", Date.now(), (fn) => ctx.storage.transactionSync(fn), access);
   }
 
-  private authenticate(password: string): boolean {
+  private authenticate(password: string, client: string): AuthResult {
     const meta = readMeta(this.ctx.storage);
-    if (meta) return passwordMatches(meta, password);
+    if (meta) return checkPassword(this.ctx.storage.sql, meta, password, client);
     createDatabase(this.ctx.storage, this.name, this.env.LIMITS.ttlSeconds, password);
-    return true;
+    return "ok";
+  }
+
+  private setPassword(password: string | null) {
+    const meta = readMeta(this.ctx.storage);
+    if (meta) changePassword(this.ctx.storage, meta, password);
   }
 
   private get name(): string {
@@ -31,12 +39,25 @@ export class RedisDO extends DurableObject<Env> {
     return name;
   }
 
+  private refusal(maxConnections: number): string | undefined {
+    if (this.deleting) return "ERR duraredis: the database is being deleted, try again";
+    if (this.closers.size >= maxConnections) return "ERR max number of clients reached";
+    return undefined;
+  }
+
   async connect(socket: Socket): Promise<void> {
     const { idleSeconds, maxConnections } = this.env.LIMITS;
-    if (this.deleting) return refuse(socket, "ERR duraredis: the database is being deleted, try again");
-    if (this.closers.size >= maxConnections) return refuse(socket, "ERR max number of clients reached");
-
     const reader = socket.readable.getReader();
+    const opened = await readPreamble(reader).catch(() => undefined);
+    if (!opened) {
+      reader.releaseLock();
+      return closeQuietly(socket);
+    }
+    const refusal = this.refusal(maxConnections);
+    if (refusal) {
+      reader.releaseLock();
+      return refuse(socket, refusal);
+    }
     const writer = socket.writable.getWriter();
     let closed = false;
     let idle: ReturnType<typeof setTimeout> | undefined;
@@ -52,7 +73,7 @@ export class RedisDO extends DurableObject<Env> {
       await writer.close().catch(() => {});
       await closeQuietly(socket);
     };
-    const conn = new Connection(this.hub, this.nextId++, this.name, send, () => void close());
+    const conn = new Connection(this.hub, this.nextId++, this.name, opened.client, send, () => void close());
     const touch = () => {
       clearTimeout(idle);
       idle = setTimeout(() => (conn.waiting ? touch() : void close()), idleSeconds * 1000);
@@ -62,6 +83,10 @@ export class RedisDO extends DurableObject<Env> {
     touch();
 
     try {
+      if (opened.rest.length) {
+        conn.receive(opened.rest);
+        await writing;
+      }
       while (!closed && !this.deleting && !conn.session.closing) {
         const next: ReadableStreamReadResult<unknown> = await reader.read();
         if (next.done) break;

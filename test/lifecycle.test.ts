@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { connect } from "node:net";
-import type { Socket } from "node:net";
+import { openRaw } from "./raw";
 import { startServer } from "./server";
 import type { Server } from "./server";
 
@@ -16,28 +15,7 @@ afterAll(() => server?.stop());
 
 const unique = (prefix: string) => `${prefix}-${Date.now().toString(36)}`;
 
-async function open() {
-  const socket: Socket = connect({ host: server.host, port: server.port });
-  await new Promise<void>((resolve, reject) => {
-    socket.once("connect", resolve).once("error", reject);
-  });
-  let received = "";
-  let closed = false;
-  socket.on("data", (d) => (received += d.toString("latin1")));
-  socket.on("close", () => (closed = true));
-  socket.on("error", () => {});
-  const send = async (line: string, replies = 1) => {
-    const start = received.length;
-    socket.write(`${line}\r\n`);
-    for (let i = 0; i < 100; i++) {
-      const got = received.slice(start).split("\r\n").filter(Boolean);
-      if (got.length >= replies || closed) return got;
-      await Bun.sleep(20);
-    }
-    throw new Error(`no reply to ${line}; got ${JSON.stringify(received.slice(start))}`);
-  };
-  return { send, isClosed: () => closed, close: () => socket.destroy() };
-}
+const open = () => openRaw(server.host, server.port);
 
 test("commands before AUTH get NOAUTH and the connection stays usable", async () => {
   const c = await open();
@@ -77,12 +55,12 @@ test("the first password protects the database", async () => {
   expect(await intruder.send(`AUTH ${name} wrong`)).toEqual(["-WRONGPASS invalid username-password pair or user is disabled."]);
   expect(await intruder.send("GET k")).toEqual(["-NOAUTH Authentication required."]);
   expect((await intruder.send("HELLO 3"))[0]).toStartWith("-NOAUTH HELLO must be called with the client already authenticated");
-  for (let i = 0; i < 4; i++) await intruder.send(`AUTH ${name} wrong${i}`);
-  expect(intruder.isClosed()).toBe(true);
+  for (let i = 0; i < 3; i++) await intruder.send(`AUTH ${name} wrong${i}`);
+  expect((await intruder.send(`AUTH ${name} wrong3`))[0]).toStartWith("-WRONGPASS duraredis: too many wrong passwords from this address");
+  intruder.close();
 
   const again = await open();
-  expect(await again.send(`AUTH ${name} s3cret`)).toEqual(["+OK"]);
-  expect(await again.send("GET k", 2)).toEqual(["$1", "v"]);
+  expect((await again.send(`AUTH ${name} s3cret`))[0]).toStartWith("-WRONGPASS duraredis: too many wrong passwords from this address");
   again.close();
 });
 

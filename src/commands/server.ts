@@ -22,8 +22,8 @@ const HELLO_NOAUTH = "NOAUTH HELLO must be called with the client already authen
 
 const INFO_ALL = new Set(["all", "everything", "default"]);
 
-const MAX_FAILED_AUTH = 5;
 const WRONGPASS = "WRONGPASS invalid username-password pair or user is disabled.";
+const BLOCKED = "WRONGPASS duraredis: too many wrong passwords from this address, try again in 15 minutes";
 
 export interface Credentials {
   database: string;
@@ -35,18 +35,17 @@ export function credentials(user: string | undefined, pass: string): Credentials
   return { database: pass, password: "" };
 }
 
-function login(ctx: Ctx, user: string | undefined, pass: string) {
+function login(ctx: Ctx, user: string | undefined, pass: string): Reply | undefined {
   const { database, password } = credentials(user, pass);
   if (database !== ctx.session.database) {
     throw new RedisError(`ERR duraredis: this connection is bound to database "${ctx.session.database}"; open a new connection for "${database}"`);
   }
-  if (ctx.server.authenticate(password)) {
+  const result = ctx.server.authenticate(password, ctx.session.client);
+  if (result === "ok") {
     ctx.session.authenticated = true;
-    return;
+    return undefined;
   }
-  ctx.session.failedAuth++;
-  if (ctx.session.failedAuth >= MAX_FAILED_AUTH) ctx.session.closing = true;
-  throw new RedisError(WRONGPASS);
+  return r.error(result === "blocked" ? BLOCKED : WRONGPASS);
 }
 
 export function helloReply(session: Session): Reply {
@@ -79,7 +78,8 @@ function hello(ctx: Ctx, args: Array<Uint8Array>): Reply {
   for (let i = 2; i < args.length; i++) {
     const o = opt(args[i]);
     if (o === "AUTH" && i + 2 < args.length) {
-      login(ctx, text(args[i + 1]), text(args[i + 2]));
+      const refused = login(ctx, text(args[i + 1]), text(args[i + 2]));
+      if (refused) return refused;
       i += 2;
     } else if (o === "SETNAME" && i + 1 < args.length) {
       name = args[++i];
@@ -215,8 +215,7 @@ function select(_: Ctx, [, db]: Array<Uint8Array>): Reply {
 function auth(ctx: Ctx, args: Array<Uint8Array>): Reply {
   if (args.length > 3) throw new RedisError(ERR.syntax);
   const [pass] = args.slice(-1);
-  login(ctx, args.length === 3 ? text(args[1]) : undefined, text(pass));
-  return r.ok;
+  return login(ctx, args.length === 3 ? text(args[1]) : undefined, text(pass)) ?? r.ok;
 }
 
 function quit(ctx: Ctx): Reply {

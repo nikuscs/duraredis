@@ -1,3 +1,4 @@
+import type { AuthResult } from "../database/guard";
 import type { Fieldset } from "./himport";
 import type { Command } from "../resp/parser";
 import type { Proto, Reply } from "../resp/reply";
@@ -13,7 +14,7 @@ export interface Session {
   createdAt: number;
   closing: boolean;
   authenticated: boolean;
-  failedAuth: number;
+  client: string;
   fieldsets: Map<string, Fieldset>;
 }
 
@@ -27,7 +28,8 @@ export interface Server {
   subscribers: (channel: Uint8Array, shard: boolean) => number;
   patterns: () => number;
   unblock: (id: number, error: boolean) => boolean;
-  authenticate: (password: string) => boolean;
+  authenticate: (password: string, client: string) => AuthResult;
+  setPassword: (password: string | null) => void;
 }
 
 export type Mode = "client" | "multi" | "script";

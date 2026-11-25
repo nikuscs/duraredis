@@ -4,6 +4,13 @@ import { globMatch } from "../store/glob";
 import { keyString } from "../store/keyspace";
 import type { Keyspace } from "../store/keyspace";
 import type { Connection } from "./connection";
+import type { AuthResult } from "./guard";
+
+export interface Access {
+  authenticate: (password: string, client: string) => AuthResult;
+  setPassword: (password: string | null) => void;
+  commandsPerSecond: number;
+}
 
 export type ChannelKind = "channel" | "pattern" | "shard";
 
@@ -19,16 +26,40 @@ export class Hub implements Server {
   private readonly ready = new Set<string>();
   private readonly subscriptions: Record<ChannelKind, Map<string, Channel>> = { channel: new Map(), pattern: new Map(), shard: new Map() };
   private serving = false;
+  private tokens: number;
+  private refilledAt = Date.now();
 
   constructor(
     readonly ks: Keyspace,
     readonly database: string,
     readonly startedAt: number,
     readonly atomic: <T>(fn: () => T) => T,
-    readonly authenticate: (password: string) => boolean,
+    private readonly access: Access,
   ) {
+    this.tokens = access.commandsPerSecond;
     ks.onChange = (key) => this.changed(key);
     ks.beforeFlush = () => this.flushing();
+  }
+
+  authenticate(password: string, client: string): AuthResult {
+    return this.access.authenticate(password, client);
+  }
+
+  setPassword(password: string | null) {
+    this.access.setPassword(password);
+  }
+
+  get commandsPerSecond(): number {
+    return this.access.commandsPerSecond;
+  }
+
+  admit(now = Date.now()): boolean {
+    const rate = this.access.commandsPerSecond;
+    this.tokens = Math.min(rate, this.tokens + ((now - this.refilledAt) * rate) / 1000);
+    this.refilledAt = now;
+    if (this.tokens < 1) return false;
+    this.tokens--;
+    return true;
   }
 
   connections(): Array<Session> {

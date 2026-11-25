@@ -5,9 +5,15 @@ export function chunkOf(value: unknown): Uint8Array {
   throw new TypeError("duraredis: TCP sockets deliver byte chunks");
 }
 
-export const closeQuietly = (socket: Socket): Promise<void> => Promise.resolve().then(() => socket.close()).catch(() => {});
+export interface Duplex {
+  readable: ReadableStream;
+  writable: WritableStream;
+  close(): Promise<void>;
+}
 
-export async function refuse(socket: Socket, message: string) {
+export const closeQuietly = (socket: Duplex): Promise<void> => Promise.resolve().then(() => socket.close()).catch(() => {});
+
+export async function refuse(socket: Duplex, message: string) {
   const writer = socket.writable.getWriter();
   await writer.write(bytes(`-${message}\r\n`)).catch(() => {});
   await writer.close().catch(() => {});

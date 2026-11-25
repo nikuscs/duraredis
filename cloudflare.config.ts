@@ -22,6 +22,7 @@ const worker = defineWorker(({ mode }) => {
         ttlSeconds: test ? 30 : 0,
         idleSeconds: test ? 6 : 3600,
         maxConnections: test ? 3 : 50,
+        commandsPerSecond: test ? 100 : 5000,
       }),
     },
   };

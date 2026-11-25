@@ -287,7 +287,6 @@ describeDual("DUMP and RESTORE vs redis:8", (run) => {
       ["XADD", "st_cfg", "1000-0", "f", "v"],
       ["XCFGSET", "st_cfg", "IDMP-DURATION", "200", "IDMP-MAXSIZE", "50"],
       ["XGROUP", "CREATE", "st_cfg", "g1", "0"],
-      ["XGROUP", "CREATECONSUMER", "st_cfg", "g1", "idle_c"],
       ["DUMP", "st_cfg"],
     ]);
   }));

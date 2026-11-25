@@ -10,6 +10,7 @@ afterAll(() => server?.stop());
 
 export const serverHost = () => server.host;
 export const serverPort = () => server.port;
+export const serverHttp = () => server.http;
 export const serverUrl = (name: string) => server.url(name);
 
 export const freshDb = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;

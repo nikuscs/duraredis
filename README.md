@@ -8,7 +8,7 @@ The idea comes from [Duragres](https://github.com/jaypopat/duragres) by [@jaypop
 
 ## ✨ Features
 
-- 🔌 **Any Redis client**: RESP2 and RESP3 over TCP, tested with ioredis, Bun's Redis client, BullMQ and Redlock.
+- 🔌 **Any Redis client**: RESP2 and RESP3 over TCP, or over WebSocket through a small local bridge, tested with ioredis, Bun's Redis client, BullMQ and Redlock.
 - 🗄️ **One database per name**: the username picks the database, the first connection creates it, and the password it was created with protects it.
 - 🧪 **Matches Redis 8.12**: the tests send the same commands to Duraredis and to a real `redis:8` and compare the raw replies byte for byte.
 - 🧩 **Redis 8 data types**: JSON, Bloom and Cuckoo filters, Count-Min Sketch, Top-K, t-digest, time series, vector sets and arrays, plus hash field and set member expiry.
@@ -52,21 +52,30 @@ await redis.set("hello", "world");
 
 Any name works in place of `mydb` (3 to 63 characters, `a-z`, `0-9` and `-`).
 
-- The first connection to a name creates the database, and its password becomes the database password. Later connections need the same password or get `WRONGPASS`; five wrong tries close the connection.
+- The first connection to a name creates the database, and its password becomes the database password. Later connections need the same password or get `WRONGPASS`.
+- Five wrong passwords from one address within 15 minutes block that address from the database for 15 minutes, across all its connections, even with the right password. A right password before that clears the count.
+- Change the password from a logged-in connection with `ACL SETUSER mydb >new-password` (`nopass` opens the database to anyone). Open connections stay logged in.
 - A database created without a password (`redis://mydb@host`) stays open to anyone who knows the name. ioredis skips `AUTH` when there is no password, so give it one.
 
 ## ☁️ Deploy to Cloudflare
-
-**You need:** Workers Paid, and a domain on a **Pro or Business** plan. Free zones can't send TCP to a Worker.
 
 ```sh
 bun run deploy
 ```
 
-Then create a Spectrum application for the zone with **Workers (tcp)** as the type, a subdomain, one TCP port such as `6379`, and this Worker as the origin. Clients connect with `redis://<name>:<password>@<subdomain>.<your-domain>:6379`.
+Clients reach the deployed Worker in one of two ways.
+
+**Over WebSocket, on any plan.** The Worker accepts encrypted WebSocket connections on its `workers.dev` URL. Run the bridge where your app runs; it listens on a local port and forwards each Redis connection over its own WebSocket:
+
+```sh
+bun run bridge https://duraredis.<your-subdomain>.workers.dev 6380
+redis-cli -u redis://mydb:my-password@127.0.0.1:6380
+```
+
+**Over plain TCP, with a Pro or Business domain.** Free zones can't send TCP to a Worker. Create a Spectrum application for the zone with **Workers (tcp)** as the type, a subdomain, one TCP port such as `6379`, and this Worker as the origin. Clients connect with `redis://<name>:<password>@<subdomain>.<your-domain>:6379`, no bridge needed.
 
 > [!WARNING]
-> Pro and Business zones get one Worker TCP application per zone, and the traffic is **not encrypted**: passwords and data cross the internet in plain text. TLS (`rediss://`) needs Spectrum Enterprise with TLS termination turned on. Use a plain-TCP deployment for testing only.
+> Spectrum on Pro and Business zones allows one Worker TCP application per zone, and that traffic is **not encrypted**: passwords and data cross the internet in plain text. TLS (`rediss://`) needs Spectrum Enterprise with TLS termination turned on. The WebSocket route is encrypted.
 
 `cloudflare.config.ts` holds the limits:
 
@@ -75,6 +84,7 @@ Then create a Spectrum application for the zone with **Workers (tcp)** as the ty
 | `ttlSeconds` | Delete databases this long after creation. `0` keeps them forever (the default) |
 | `idleSeconds` | Close idle connections. Subscribers and blocked clients are exempt |
 | `maxConnections` | Connections per database |
+| `commandsPerSecond` | Commands per second per database; extra commands get an error |
 | `CONNECT_LIMIT` | New connections per client IP per minute |
 
 ## 📚 Commands
@@ -105,7 +115,7 @@ The server commands answer as a single-node Redis with nothing to report: one us
 
 | Path | What it does |
 | --- | --- |
-| `src/gateway.ts` | Reads commands until `AUTH` or `HELLO ... AUTH` names the database, answers anything earlier with `NOAUTH`, then pipes the connection to that database's Durable Object |
+| `src/gateway.ts` | Accepts TCP connections, and `src/websocket.ts` WebSocket ones. Reads commands until `AUTH` or `HELLO ... AUTH` names the database, answers anything earlier with `NOAUTH`, then pipes the connection to that database's Durable Object |
 | `src/database/` | The Durable Object: connections, create-on-connect, expiry, per-connection state (protocol, `MULTI`, `WATCH`, subscriptions), and the hub that wakes blocked clients and delivers messages |
 | `src/resp/` | Parses requests (multibulk and inline) and encodes replies for RESP2 or RESP3 |
 | `src/store/` | Keys in SQLite: one row per key, a table per type for its members, and the RDB codec for `DUMP` |
@@ -122,13 +132,19 @@ bun run lint
 bun run test
 ```
 
-The tests start their own Workers on free ports. Locking, BullMQ, client library and lifecycle tests check results directly. The comparison tests start a `redis:8` container and are skipped when Docker is not running.
+The tests start their own Workers on free ports. Locking, load, restart, BullMQ, client library, security and lifecycle tests check results directly. The comparison tests start a `redis:8` container and are skipped when Docker is not running.
+
+To run the end-to-end checks against a deployed Worker through the bridge:
+
+```sh
+DURAREDIS_LIVE_URL=https://duraredis.<your-subdomain>.workers.dev bun run test:live
+```
 
 ## ⚠️ Limits
 
 | Limit | Detail |
 | --- | --- |
-| Encryption | Plain TCP unless Spectrum Enterprise terminates TLS in front |
+| Encryption | The WebSocket route is encrypted; direct TCP is plain unless Spectrum Enterprise terminates TLS in front |
 | Databases | One per name; `SELECT` accepts only `0` |
 | Value size | A key plus its value, or one member, must fit in a 2 MB SQLite row |
 | Latency | A network hop plus SQLite: milliseconds, not microseconds |

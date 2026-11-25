@@ -1,6 +1,8 @@
 import { credentials as login } from "./commands/server";
 import { DB_NAME } from "./database/lifecycle";
+import { preamble } from "./database/preamble";
 import { chunkOf, closeQuietly, refuse } from "./database/socket";
+import type { Duplex } from "./database/socket";
 import { Parser } from "./resp/parser";
 import type { Command } from "./resp/parser";
 import { Encoder, r, RedisError, text } from "./resp/reply";
@@ -78,10 +80,10 @@ async function bind(reader: ReadableStreamDefaultReader, writer: WritableStreamD
   }
 }
 
-async function pipe(socket: Socket, upstream: Socket, first: Uint8Array) {
+async function pipe(socket: Duplex, upstream: Socket, client: string, first: Uint8Array) {
   const down = upstream.readable.pipeTo(socket.writable);
   const writer = upstream.writable.getWriter();
-  const sent = await writer.write(first).then(() => true, () => false);
+  const sent = await writer.write(preamble(client)).then(() => writer.write(first)).then(() => true, () => false);
   writer.releaseLock();
   const up = sent ? socket.readable.pipeTo(upstream.writable) : Promise.resolve();
   await Promise.allSettled([down, up]);
@@ -90,6 +92,10 @@ async function pipe(socket: Socket, upstream: Socket, first: Uint8Array) {
 
 export async function connect(socket: Socket, env: Env) {
   const { remoteAddress = "" } = await socket.opened;
+  await serve(socket, remoteAddress, env);
+}
+
+export async function serve(socket: Duplex, remoteAddress: string, env: Env) {
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
   const timer = setTimeout(() => void reader.cancel().catch(() => {}), PREAUTH_TIMEOUT_MS);
@@ -106,5 +112,5 @@ export async function connect(socket: Socket, env: Env) {
   if (!bound) return closeQuietly(socket);
   const upstream = env.REDIS.getByName(bound.database).connect("redis:6379", { allowHalfOpen: true, secureTransport: "off" });
   await upstream.opened;
-  await pipe(socket, upstream, bound.bytes);
+  await pipe(socket, upstream, hostOf(remoteAddress), bound.bytes);
 }
