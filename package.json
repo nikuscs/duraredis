@@ -1,0 +1,25 @@
+{
+  "name": "duraredis",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@cloudflare/config": "0.32.1",
+    "@cloudflare/oxlint-config": "0.2.0",
+    "@types/bun": "^1.4.5",
+    "bullmq": "^6.7.10",
+    "ioredis": "^6.1.0",
+    "oxlint": "^1.94.0",
+    "redlock": "5.0.0-beta.2",
+    "tsrs": "^7.1.0-beta.tsrs2",
+    "typescript": "7.0.2",
+    "wrangler": "4.168.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev --experimental-new-config",
+    "deploy": "wrangler deploy --experimental-new-config",
+    "typecheck": "bun check && bun check -p test",
+    "lint": "oxlint .",
+    "test": "bun test --timeout 90000"
+  }
+}
